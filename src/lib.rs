@@ -1,5 +1,7 @@
 pub(crate) mod intrusive;
 
+pub mod sync;
+
 #[cfg(test)]
 mod tests {
     #[test]
