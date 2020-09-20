@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 pub(crate) struct Link<T> {
     owner: *mut T,
     next: *mut Link<T>,
@@ -17,13 +19,13 @@ impl<T> Link<T> {
 }
 
 pub(crate) struct List<T> {
-    head: *mut Link<T>,
+    head: AtomicPtr<Link<T>>,
 }
 
 impl<T> List<T> {
     pub const fn new() -> Self {
         Self {
-            head: core::ptr::null_mut(),
+            head: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -38,8 +40,10 @@ impl<T> List<T> {
     pub unsafe fn push(&mut self, link_owner: &mut T, link: *mut Link<T>) {
         let link = &mut *link;
         link.owner = link_owner as *mut T;
-        link.next = self.head;
-        self.head = link;
+        loop {
+            link.next = self.head;
+            self.head = link;
+        }
     }
 
     pub fn pop(&mut self) -> Option<&mut Link<T>> {

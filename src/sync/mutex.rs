@@ -28,7 +28,7 @@ impl Default for MutexWaiter {
 pub struct MutexAnchor<T> {
     locked: bool,
     value: T,
-    rc_pin: crate::intrusive::rc::RcAnchor<()>,
+    rc: crate::intrusive::rc::RcAnchor<*mut Self>,
     waiting_wakers: crate::intrusive::slist::List<MutexWaiter>,
 }
 
@@ -57,7 +57,7 @@ impl<T> MutexAnchor<T> {
         Self {
             locked: false,
             value,
-            rc_pin: crate::intrusive::rc::RcAnchor::new(()),
+            rc: crate::intrusive::rc::RcAnchor::new(core::ptr::null_mut()),
             waiting_wakers: crate::intrusive::slist::List::new(),
         }
     }
@@ -73,12 +73,12 @@ impl<T> MutexAnchor<T> {
     /// let mutex_ref = mutex.take_ref();
     /// ```
     pub fn take_ref(self: Pin<&mut Self>) -> MutexRef<T> {
-        let ptr = unsafe { self.get_unchecked_mut() };
-        let ret_ptr = ptr as *mut Self;
-        let rc_ref_pin = unsafe { Pin::new_unchecked(&mut ptr.rc_pin) };
+        let self_ref = unsafe { self.get_unchecked_mut() };
+        let self_ptr = self_ref as *mut Self;
+        self_ref.rc = crate::intrusive::rc::RcAnchor::new(self_ptr);
+        let rc_ref_pin = unsafe { Pin::new_unchecked(&mut self_ref.rc) };
 
         MutexRef {
-            mutex: ret_ptr,
             rc_ref: rc_ref_pin.take(),
         }
     }
@@ -90,13 +90,12 @@ impl<T> MutexAnchor<T> {
 /// get access to the stored data.
 #[derive(Clone)]
 pub struct MutexRef<T> {
-    mutex: *mut MutexAnchor<T>,
-    rc_ref: crate::intrusive::rc::RcRef<()>,
+    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
 }
 
 impl<T> MutexRef<T> {
     fn mutex_mut(&self) -> &mut MutexAnchor<T> {
-        unsafe { &mut *self.mutex }
+        unsafe { &mut **self.rc_ref }
     }
 
     /// Acquires the mutex.
@@ -119,21 +118,15 @@ impl<T> MutexRef<T> {
         if !self.mutex_mut().locked {
             self.mutex_mut().locked = true;
             MutexGuard {
-                mutex: self.mutex,
                 rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
             }
         } else {
             LockFuture {
                 link: crate::intrusive::slist::Link::new(),
                 waiter: MutexWaiter::default(),
-                mutex: self.mutex,
-            }
-            .await;
-            // We have obtained the lock
-            MutexGuard {
-                mutex: self.mutex,
                 rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
             }
+            .await
         }
     }
 
@@ -155,7 +148,6 @@ impl<T> MutexRef<T> {
         if !self.mutex_mut().locked {
             self.mutex_mut().locked = true;
             Some(MutexGuard {
-                mutex: self.mutex,
                 rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
             })
         } else {
@@ -166,8 +158,7 @@ impl<T> MutexRef<T> {
 
 /// A guard that releases the mutex when dropped.
 pub struct MutexGuard<T> {
-    mutex: *mut MutexAnchor<T>,
-    rc_ref: crate::intrusive::rc::RcRef<()>,
+    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
 }
 
 impl<T> MutexGuard<T> {
@@ -206,7 +197,6 @@ impl<T> MutexGuard<T> {
     /// ```
     pub fn mutex_ref(&self) -> MutexRef<T> {
         MutexRef {
-            mutex: self.mutex,
             rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
         }
     }
@@ -216,33 +206,33 @@ impl<T> Deref for MutexGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &unsafe { &*self.mutex }.value
+        &unsafe { &**self.rc_ref }.value
     }
 }
 
 impl<T> DerefMut for MutexGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut unsafe { &mut *self.mutex }.value
+        &mut unsafe { &mut **self.rc_ref }.value
     }
 }
 
 impl<T> Drop for MutexGuard<T> {
     fn drop(&mut self) {
-        unsafe { &mut *self.mutex }.release_lock();
+        unsafe { &mut **self.rc_ref }.release_lock();
     }
 }
 
 struct LockFuture<T> {
     link: crate::intrusive::slist::Link<MutexWaiter>,
     waiter: MutexWaiter,
-    mutex: *mut MutexAnchor<T>,
+    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
 }
 
 impl<T> core::future::Future for LockFuture<T> {
-    type Output = ();
+    type Output = MutexGuard<T>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mutex = unsafe { &mut *self.mutex };
+        let mutex = unsafe { &mut **self.rc_ref };
         if mutex.locked {
             self.waiter.waker = MaybeUninit::new(cx.waker().clone());
             let link = &mut self.link as *mut _;
@@ -251,7 +241,11 @@ impl<T> core::future::Future for LockFuture<T> {
             Poll::Pending
         } else {
             mutex.locked = true;
-            Poll::Ready(())
+            Poll::Ready(
+                MutexGuard {
+                    rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
+                }
+            )
         }
     }
 }

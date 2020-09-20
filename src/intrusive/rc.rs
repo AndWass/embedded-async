@@ -19,6 +19,15 @@ impl<T> RcAnchor<T> {
         ptr.ref_count = 1;
         RcRef { pin: ptr as *mut _ }
     }
+
+    pub unsafe fn get_ref(&mut self) -> RcRef<T> {
+        self.ref_count += 1;
+        RcRef { pin: self as *mut _ }
+    }
+
+    pub fn ref_count(&self) -> u32 {
+        self.ref_count
+    }
 }
 
 impl<T> Drop for RcAnchor<T> {
