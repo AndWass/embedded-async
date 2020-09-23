@@ -1,3 +1,5 @@
+use core::marker::PhantomData;
+
 pub(crate) struct Link<T> {
     owner: *mut T,
     prev: *mut Link<T>,
@@ -90,6 +92,39 @@ impl<T> List<T> {
             if let Some(x) = dst.head.next.as_mut() {
                 x.prev = &mut dst.head;
             }
+        }
+    }
+
+    pub unsafe fn iter(&self) -> ListIterator<T> {
+        ListIterator {
+            current: Link{
+                owner: core::ptr::null_mut(),
+                next: self.head.next,
+                prev: core::ptr::null_mut(),
+            },
+            phantom: PhantomData,
+        }
+    }
+}
+
+pub struct ListIterator<'a, T: 'static> {
+    current: Link<T>,
+    phantom: core::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, T: 'static> Iterator for ListIterator<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.current.next.is_null() {
+            unsafe {
+                let next = &*self.current.next;
+                self.current.next = next.next;
+                Some(&*next.owner)
+            }
+        }
+        else {
+            None
         }
     }
 }
@@ -246,6 +281,27 @@ mod tests {
             assert_eq!(link1.next, core::ptr::null_mut());
 
             assert_eq!(link2.next, core::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn iter_test() {
+        let mut link_item = [1usize, 2, 3, 4,];
+        let mut list = List::<usize>::new();
+        let mut link1 = Link::<usize>::new();
+        let mut link2 = Link::<usize>::new();
+        let mut link3 = Link::<usize>::new();
+        let mut link4 = Link::<usize>::new();
+
+        unsafe {
+            list.push(&mut link_item[3], &mut link1);
+            list.push(&mut link_item[2], &mut link2);
+            list.push(&mut link_item[1], &mut link3);
+            list.push(&mut link_item[0], &mut link4);
+
+            for x in list.iter().enumerate() {
+                assert_eq!(x.0+1, *x.1);
+            }
         }
     }
 }
