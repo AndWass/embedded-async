@@ -1,9 +1,9 @@
-use embedded_async::channel::{ChannelAnchor, consts};
 use core::pin::Pin;
+use embedded_async::channel::{consts, Channel};
 
 fn main() {
     {
-        let mut chan: ChannelAnchor<i32, consts::U8> = ChannelAnchor::new();
+        let mut chan: Channel<i32, consts::U8> = Channel::new();
         let pin = unsafe { Pin::new_unchecked(&mut chan) };
         let (sender, _receiver) = pin.split().unwrap();
         core::mem::forget(sender);

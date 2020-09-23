@@ -1,7 +1,9 @@
+use core::mem::MaybeUninit;
+use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
-use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
-use std::task::{Context, Poll};
+use core::task::{Context, Poll};
+
+use crate::intrusive::double_list::*;
 
 struct MutexWaiter {
     waker: MaybeUninit<core::task::Waker>,
@@ -15,6 +17,16 @@ impl Default for MutexWaiter {
     }
 }
 
+struct Inner<T> {
+    locked: bool,
+    value: T,
+    // The anchor will be initialized to self when
+    // the reference is taken. It will be safe to derefence this
+    // pointer as long as the the mutex isn't moved/dropped.
+    rc: crate::intrusive::rc::RcAnchor<*const Mutex<T>>,
+    waiting_wakers: List<MutexWaiter>,
+}
+
 /// This is the data-holder half of the async mutex. This must be kept alive
 /// for as long as there are references alive.
 ///
@@ -25,18 +37,29 @@ impl Default for MutexWaiter {
 ///
 /// Dropping a `MutexAnchor` while there are still `MutexRef` instances to this anchor
 /// alive will cause a panic.
-pub struct MutexAnchor<T> {
-    locked: bool,
-    value: T,
-    rc: crate::intrusive::rc::RcAnchor<*mut Self>,
-    waiting_wakers: crate::intrusive::slist::List<MutexWaiter>,
+pub struct Mutex<T> {
+    inner: core::cell::UnsafeCell<Inner<T>>,
 }
 
-impl<T> MutexAnchor<T> {
-    fn release_lock(&mut self) {
-        self.locked = false;
+impl<T> Mutex<T> {
+    fn inner(&self) -> &Inner<T> {
+        unsafe { &*self.inner.get() }
+    }
 
-        let mut waiting = self.waiting_wakers.take();
+    fn inner_mut(&self) -> &mut Inner<T> {
+        unsafe { &mut *self.inner.get() }
+    }
+
+    fn maybe_init_inner(&self) {
+        if (*self.inner().rc).is_null() {
+            self.inner_mut().rc = crate::intrusive::rc::RcAnchor::new(self);
+        }
+    }
+
+    fn release_lock(&self) {
+        self.inner_mut().locked = false;
+        let mut waiting = List::<MutexWaiter>::new();
+        self.inner_mut().waiting_wakers.move_to(&mut waiting);
         while let Some(x) = waiting.pop() {
             x.owner().and_then(|x| {
                 unsafe { &*x.waker.as_ptr() }.wake_by_ref();
@@ -50,36 +73,57 @@ impl<T> MutexAnchor<T> {
     /// ## Examples
     ///
     /// ```
-    /// # use embedded_async::sync::MutexAnchor;
-    /// let mutex = MutexAnchor::new(0);
+    /// # use embedded_async::sync::Mutex;
+    /// let mutex = Mutex::new(0);
     /// ```
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self {
-            locked: false,
-            value,
-            rc: crate::intrusive::rc::RcAnchor::new(core::ptr::null_mut()),
-            waiting_wakers: crate::intrusive::slist::List::new(),
+            inner: core::cell::UnsafeCell::new(Inner {
+                locked: false,
+                value,
+                rc: crate::intrusive::rc::RcAnchor::new(core::ptr::null()),
+                waiting_wakers: List::new(),
+            }),
         }
     }
 
-    /// Take a reference to the mutex.
+    /// Take a reference to the mutex. This requires the mutex to be pinned,
+    /// and will consume the pin.
     ///
     /// ## Examples
     ///
     /// ```
-    /// use embedded_async::sync::MutexAnchor;
-    /// let mutex = MutexAnchor::new(0);
+    /// use embedded_async::sync::Mutex;
+    /// let mutex = Mutex::new(0);
     /// pin_utils::pin_mut!(mutex); // Pin the mutex anchor in place
     /// let mutex_ref = mutex.take_ref();
     /// ```
     pub fn take_ref(self: Pin<&mut Self>) -> MutexRef<T> {
         let self_ref = unsafe { self.get_unchecked_mut() };
-        let self_ptr = self_ref as *mut Self;
-        self_ref.rc = crate::intrusive::rc::RcAnchor::new(self_ptr);
-        let rc_ref_pin = unsafe { Pin::new_unchecked(&mut self_ref.rc) };
+
+        self_ref.maybe_init_inner();
 
         MutexRef {
-            rc_ref: rc_ref_pin.take(),
+            rc_ref: unsafe { self_ref.inner_mut().rc.get_ref() },
+        }
+    }
+
+    unsafe fn try_lock_impl(&self) -> Option<MutexGuard<T>> {
+        if !&self.inner().locked {
+            self.inner_mut().locked = true;
+            Some(MutexGuard {
+                rc_ref: self.inner_mut().rc.get_ref(),
+            })
+        } else {
+            None
+        }
+    }
+
+    unsafe fn lock_impl(&self) -> LockFuture<T> {
+        LockFuture {
+            link: Link::new(),
+            waiter: MutexWaiter::default(),
+            rc_ref: self.inner_mut().rc.get_ref(),
         }
     }
 }
@@ -90,12 +134,12 @@ impl<T> MutexAnchor<T> {
 /// get access to the stored data.
 #[derive(Clone)]
 pub struct MutexRef<T> {
-    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
+    rc_ref: crate::intrusive::rc::RcRef<*const Mutex<T>>,
 }
 
 impl<T> MutexRef<T> {
-    fn mutex_mut(&self) -> &mut MutexAnchor<T> {
-        unsafe { &mut **self.rc_ref }
+    fn mutex(&self) -> &Mutex<T> {
+        unsafe { &**self.rc_ref }
     }
 
     /// Acquires the mutex.
@@ -106,28 +150,16 @@ impl<T> MutexRef<T> {
     ///
     /// ```
     /// # smol::block_on(async {
-    /// use embedded_async::sync::MutexAnchor;
+    /// use embedded_async::sync::Mutex;
     ///
-    /// let mutex = MutexAnchor::new(10);
+    /// let mutex = Mutex::new(10);
     /// pin_utils::pin_mut!(mutex);
     /// let mutex = mutex.take_ref();
     /// let guard = mutex.lock().await;
     /// assert_eq!(*guard, 10);
     /// # })
-    pub async fn lock(&self) -> MutexGuard<T> {
-        if !self.mutex_mut().locked {
-            self.mutex_mut().locked = true;
-            MutexGuard {
-                rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
-            }
-        } else {
-            LockFuture {
-                link: crate::intrusive::slist::Link::new(),
-                waiter: MutexWaiter::default(),
-                rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
-            }
-            .await
-        }
+    pub fn lock(&self) -> LockFuture<T> {
+        unsafe { self.mutex().lock_impl() }
     }
 
     /// Attempts to acquire the mutex. Returns `None` if the mutex couldn't be acquired. Otherwise
@@ -136,29 +168,22 @@ impl<T> MutexRef<T> {
     /// ## Examples
     ///
     /// ```
-    /// use embedded_async::sync::MutexAnchor;
+    /// use embedded_async::sync::Mutex;
     ///
-    /// let mutex = MutexAnchor::new(10);
+    /// let mutex = Mutex::new(10);
     /// pin_utils::pin_mut!(mutex);
     /// let mutex = mutex.take_ref();
     /// let guard = mutex.try_lock().unwrap();
     /// assert_eq!(*guard, 10);
     /// ```
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
-        if !self.mutex_mut().locked {
-            self.mutex_mut().locked = true;
-            Some(MutexGuard {
-                rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
-            })
-        } else {
-            None
-        }
+        unsafe { self.mutex().try_lock_impl() }
     }
 }
 
 /// A guard that releases the mutex when dropped.
 pub struct MutexGuard<T> {
-    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
+    rc_ref: crate::intrusive::rc::RcRef<*const Mutex<T>>,
 }
 
 impl<T> MutexGuard<T> {
@@ -167,8 +192,8 @@ impl<T> MutexGuard<T> {
     /// ## Examples
     ///
     /// ```
-    /// use embedded_async::sync::MutexAnchor;
-    /// let mutex = MutexAnchor::new(10);
+    /// use embedded_async::sync::Mutex;
+    /// let mutex = Mutex::new(10);
     /// pin_utils::pin_mut!(mutex);
     /// let mutex = mutex.take_ref();
     /// let lock = mutex.try_lock().unwrap();
@@ -183,8 +208,8 @@ impl<T> MutexGuard<T> {
     ///
     /// ## Examples
     /// ```
-    /// use embedded_async::sync::MutexAnchor;
-    /// let mutex = MutexAnchor::new(10);
+    /// use embedded_async::sync::Mutex;
+    /// let mutex = Mutex::new(10);
     /// pin_utils::pin_mut!(mutex);
     /// let mutex = mutex.take_ref();
     /// let lock = mutex.try_lock().unwrap();
@@ -206,46 +231,46 @@ impl<T> Deref for MutexGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &unsafe { &**self.rc_ref }.value
+        &unsafe { &**self.rc_ref }.inner().value
     }
 }
 
 impl<T> DerefMut for MutexGuard<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut unsafe { &mut **self.rc_ref }.value
+        &mut unsafe { &**self.rc_ref }.inner_mut().value
     }
 }
 
 impl<T> Drop for MutexGuard<T> {
     fn drop(&mut self) {
-        unsafe { &mut **self.rc_ref }.release_lock();
+        unsafe {
+            (&**self.rc_ref).release_lock();
+        }
     }
 }
 
-struct LockFuture<T> {
-    link: crate::intrusive::slist::Link<MutexWaiter>,
+pub struct LockFuture<T> {
+    link: Link<MutexWaiter>,
     waiter: MutexWaiter,
-    rc_ref: crate::intrusive::rc::RcRef<*mut MutexAnchor<T>>,
+    rc_ref: crate::intrusive::rc::RcRef<*const Mutex<T>>,
 }
 
 impl<T> core::future::Future for LockFuture<T> {
     type Output = MutexGuard<T>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mutex = unsafe { &mut **self.rc_ref };
-        if mutex.locked {
+        let mutex = unsafe { &**self.rc_ref };
+        if mutex.inner().locked {
             self.waiter.waker = MaybeUninit::new(cx.waker().clone());
             let link = &mut self.link as *mut _;
             let waiter = &mut self.waiter;
-            unsafe { mutex.waiting_wakers.push(waiter, link) };
+            unsafe { mutex.inner_mut().waiting_wakers.push(waiter, link) };
             Poll::Pending
         } else {
-            mutex.locked = true;
-            Poll::Ready(
-                MutexGuard {
-                    rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
-                }
-            )
+            mutex.inner_mut().locked = true;
+            Poll::Ready(MutexGuard {
+                rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
+            })
         }
     }
 }
@@ -253,36 +278,36 @@ impl<T> core::future::Future for LockFuture<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::Ordering;
     use pin_utils::core_reexport::sync::atomic::AtomicBool;
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn new_mutex_unlocked() {
-        let mutex = MutexAnchor::new(10);
-        assert_eq!(mutex.locked, false);
-        assert_eq!(mutex.value, 10);
+        let mutex = Mutex::new(10);
+        assert_eq!(mutex.inner().locked, false);
+        assert_eq!(mutex.inner().value, 10);
     }
 
     #[test]
     fn unlock_works() {
-        let mutex = MutexAnchor::new(10);
+        let mutex = Mutex::new(10);
         pin_utils::pin_mut!(mutex);
         let mutex = mutex.take_ref();
         {
-            assert!(!mutex.mutex_mut().locked);
+            assert!(!mutex.mutex().inner().locked);
             let lock = mutex.try_lock().unwrap();
-            assert!(mutex.mutex_mut().locked);
+            assert!(mutex.mutex().inner().locked);
             lock.unlock();
-            assert!(!mutex.mutex_mut().locked);
+            assert!(!mutex.mutex().inner().locked);
         }
     }
 
     #[test]
     fn lock_blocks() {
         smol::block_on(async {
-            let mutex = MutexAnchor::new(10);
+            let mutex = Mutex::new(10);
             pin_utils::pin_mut!(mutex);
-            let mptr = unsafe { mutex.as_mut().get_unchecked_mut() as *mut MutexAnchor<i32> };
+            let mptr = unsafe { mutex.as_mut().get_unchecked_mut() as *mut Mutex<i32> };
             let mref = mutex.take_ref();
 
             let mptr = unsafe { &mut *mptr };
@@ -300,13 +325,13 @@ mod tests {
                 *lock = 40;
             });
 
-            assert!(mptr.waiting_wakers.is_empty());
+            assert!(mptr.inner().waiting_wakers.is_empty());
             assert!(executor.try_tick());
             assert!(STARTED.load(Ordering::Acquire));
-            assert!(!mptr.waiting_wakers.is_empty());
+            assert!(!mptr.inner().waiting_wakers.is_empty());
             assert_eq!(*lock, 10);
             lock.unlock();
-            assert!(mptr.waiting_wakers.is_empty());
+            assert!(mptr.inner().waiting_wakers.is_empty());
             executor.tick().await;
             let lock = mref2.try_lock();
             assert!(lock.is_some());
