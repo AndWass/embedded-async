@@ -26,9 +26,9 @@ pub trait TimerBackend {
     fn elapsed_time(&self) -> Microseconds;
     /// Reset the elapsed time since start.
     ///
-    /// This function is only valid while the timer is paused and `elapsed_time` after this must
+    /// This function will only called while the timer is paused and `elapsed_time` after this must
     /// return 0.
-    fn reset_elapsed_time(&self);
+    fn reset_elapsed_time(&mut self);
 }
 
 struct WaitingTimer {
@@ -36,46 +36,106 @@ struct WaitingTimer {
     waker: Option<Waker>,
 }
 
+struct TimerHandleRcRef<T: TimerBackend> {
+    rc: RcRef<*mut Timer<T>>
+}
+
+impl<T: TimerBackend> Clone for TimerHandleRcRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            rc: RcRef::clone(&self.rc)
+        }
+    }
+}
+
+impl<T: TimerBackend> Drop for TimerHandleRcRef<T> {
+    fn drop(&mut self) {
+        if self.rc.ref_count() == 1 {
+            let timer = unsafe { &mut **self.rc };
+            // About to drop the last handle, wake the runner task so that it can exit as well!
+            timer.waker.as_ref().and_then(|w| Some(w.wake_by_ref()));
+        }
+    }
+}
+
 pub struct Timer<Timer: TimerBackend> {
-    backend: Timer,
+    backend: Option<Timer>,
     waker: Option<Waker>,
     sleeping_timers: List<WaitingTimer>,
     new_timers: List<WaitingTimer>,
-    rc: RcAnchor<*mut Self>,
+    rc_delays: RcAnchor<*mut Self>,
+    rc_runner: RcAnchor<*mut Self>,
 }
 
 impl<T: TimerBackend> Timer<T> {
+    fn backend(&self) -> &T {
+        self.backend.as_ref().expect("Non-existing timer backend!")
+    }
+
+    fn backend_mut(&mut self) -> &mut T {
+        self.backend.as_mut().expect("Non-existing timer backend!")
+    }
+
+    /// Construct a new timer from a timer backend.
     pub fn new(backend: T) -> Self {
         Self {
-            backend,
+            backend: Some(backend),
             waker: None,
             sleeping_timers: List::new(),
             new_timers: List::new(),
-            rc: RcAnchor::new(core::ptr::null_mut()),
+            rc_delays: RcAnchor::new(core::ptr::null_mut()),
+            rc_runner: RcAnchor::new(core::ptr::null_mut()),
         }
     }
 
+    /// Split a pinned timer
     pub fn split(self: Pin<&mut Self>) -> Option<(TimerTask<T>, TimerHandle<T>)> {
-        if (*self.rc).is_null() {
+        if (*self.rc_runner).is_null() {
             let me = unsafe { self.get_unchecked_mut() };
-            me.rc = RcAnchor::new(me);
-            let rc_ref = unsafe { me.rc.get_ref() };
-            Some(
-                (TimerTask {
-                    timer: RcRef::clone(&rc_ref),
-                },
-                 TimerHandle {
-                     timer: rc_ref
-                 })
-            )
+            me.rc_delays = RcAnchor::new(me);
+            me.rc_runner = RcAnchor::new(me);
+            unsafe {
+                Some(
+                    (TimerTask {
+                        timer: me.rc_runner.get_ref(),
+                    },
+                     TimerHandle {
+                         timer: TimerHandleRcRef { rc: me.rc_delays.get_ref() },
+                     })
+                )
+            }
         } else {
             None
         }
+    }
+
+    pub fn consume(mut self) -> Option<T> {
+        self.backend.take()
+    }
+
+    pub unsafe fn consume_task(mut task: TimerTask<T>) -> Option<T> {
+        let timer = &mut **task.timer;
+        timer.backend.take()
     }
 }
 
 pub struct TimerTask<T: TimerBackend> {
     timer: RcRef<*mut Timer<T>>,
+}
+
+impl<T: TimerBackend> TimerTask<T> {
+    /// Runs the timer task
+    ///
+    /// If this task isn't running no timer handles will be serviced.
+    ///
+    /// The function returns once all timer handles are destroyed
+    pub async fn run(self) -> Self {
+        let runner = TimerTaskRunner::<T> {
+            timer: unsafe { &mut **self.timer }
+        };
+        runner.await;
+        self
+    }
 }
 
 struct TimerTaskRunner<'a, T: TimerBackend> {
@@ -84,6 +144,10 @@ struct TimerTaskRunner<'a, T: TimerBackend> {
 
 impl<T: TimerBackend> TimerTaskRunner<'_, T> {
     fn update_sleeping_timers(&mut self, elapsed: Microseconds) -> Option<Microseconds> {
+        // Loops through all currently sleeping timers, decrementing their time until timeout
+        // with the elapsed time. If the timers have timed out they will be woken up.
+        // otherwise they are re-added to the list of sleeping timers.
+
         let mut sleepers = List::<WaitingTimer>::new();
         self.timer.sleeping_timers.move_to(&mut sleepers);
         let mut next_wait_time: Option<Microseconds> = None;
@@ -111,27 +175,38 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
     }
 
     fn append_new_timers(&mut self) -> Option<Microseconds> {
+        // Takes all timers in the new_timers list and adds them to the list of sleeping timers
         let mut to_append = List::<WaitingTimer>::new();
         self.timer.new_timers.move_to(&mut to_append);
 
         let mut retval: Option<Microseconds> = None;
 
         while let Some(n) = to_append.pop() {
-            let x_ptr = n as *mut _;
+            let n_ptr = n as *mut _;
 
-            if let Some(owner) = n.owner_mut() {
+            let owner = n.owner_mut().expect("");
+            if owner.time_until_timeout.0 > 0 {
                 retval = retval.and_then(|w| {
                     Some(w.min(owner.time_until_timeout))
                 }).or(Some(owner.time_until_timeout));
                 unsafe {
-                    self.timer.sleeping_timers.push(owner, x_ptr);
+                    self.timer.sleeping_timers.push(owner, n_ptr);
                 }
-            } else {
-                unsafe { unreachable_unchecked() };
+            }
+            else {
+                owner.waker.as_ref().and_then(|x| Some(x.wake_by_ref()));
             }
         }
 
         retval
+    }
+
+    fn pause_backend(&mut self) -> Microseconds {
+        let backend = self.timer.backend_mut();
+        backend.pause();
+        let elapsed = backend.elapsed_time();
+        backend.reset_elapsed_time();
+        elapsed
     }
 }
 
@@ -142,13 +217,18 @@ impl<T: TimerBackend> Future for TimerTaskRunner<'_, T> {
         let me = unsafe {
             self.get_unchecked_mut()
         };
+
+        if me.timer.rc_delays.ref_count() == 0 {
+            return Poll::Ready(());
+        }
+
         me.timer.waker = Some(cx.waker().clone());
-        me.timer.backend.pause();
-        let elapsed = me.timer.backend.elapsed_time();
-        me.timer.backend.reset_elapsed_time();
+        let elapsed = me.pause_backend();
+
         let mut next_wait_time: Option<Microseconds> = None;
 
         if elapsed.0 > 0 {
+            // Need to update sleeping timers, wake any elapsed timers
             next_wait_time = me.update_sleeping_timers(elapsed);
         } else {
             unsafe {
@@ -170,7 +250,7 @@ impl<T: TimerBackend> Future for TimerTaskRunner<'_, T> {
         };
 
         if let Some(next_wait_time) = next_wait_time {
-            me.timer.backend.wake_in(cx.waker().clone(), next_wait_time);
+            me.timer.backend_mut().wake_in(cx.waker().clone(), next_wait_time);
         }
 
         // Always poll pending, this future will never complete!
@@ -179,13 +259,21 @@ impl<T: TimerBackend> Future for TimerTaskRunner<'_, T> {
 }
 
 pub struct TimerHandle<T: TimerBackend> {
-    timer: RcRef<*mut Timer<T>>,
+    timer: TimerHandleRcRef<T>,
+}
+
+impl<T: TimerBackend> Clone for TimerHandle<T> {
+    fn clone(&self) -> Self {
+        Self {
+            timer: self.timer.clone()
+        }
+    }
 }
 
 impl<T: TimerBackend> TimerHandle<T> {
     pub fn delay(&self, duration: Microseconds) -> DelayFuture<T> {
         DelayFuture {
-            timer: RcRef::clone(&self.timer),
+            timer: self.timer.clone(),
             link: Link::new(),
             waiter: WaitingTimer {
                 waker: None,
@@ -195,16 +283,8 @@ impl<T: TimerBackend> TimerHandle<T> {
     }
 }
 
-impl<T: TimerBackend> Clone for TimerHandle<T> {
-    fn clone(&self) -> Self {
-        Self {
-            timer: RcRef::clone(&self.timer)
-        }
-    }
-}
-
 pub struct DelayFuture<T: TimerBackend> {
-    timer: RcRef<*mut Timer<T>>,
+    timer: TimerHandleRcRef<T>,
     waiter: WaitingTimer,
     link: Link<WaitingTimer>,
 }
@@ -215,11 +295,12 @@ impl<T: TimerBackend> Future for DelayFuture<T>
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.waiter.waker.is_some() {
+            // Already installed and waiting on timeout!
             Poll::Pending
         }
         else if self.waiter.time_until_timeout > 0u32.microseconds() {
             let me = unsafe { self.get_unchecked_mut() };
-            let timer = unsafe { &mut **me.timer };
+            let timer = unsafe { &mut **me.timer.rc };
             unsafe { timer.new_timers.push(&mut me.waiter, &mut me.link) };
             me.waiter.waker = Some(cx.waker().clone());
             if let Some(x) = &timer.waker {
@@ -230,14 +311,5 @@ impl<T: TimerBackend> Future for DelayFuture<T>
         } else {
             Poll::Ready(())
         }
-    }
-}
-
-pub async fn run_timer<T: TimerBackend>(task: TimerTask<T>) {
-    loop {
-        let runner = TimerTaskRunner::<T> {
-            timer: unsafe { &mut **task.timer }
-        };
-        runner.await;
     }
 }
