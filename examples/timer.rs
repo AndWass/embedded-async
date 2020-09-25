@@ -87,4 +87,5 @@ fn main() {
     uio::task_start!(hello_world1, hello_world(1, Microseconds(1_000_000), handle.clone()));
     uio::task_start!(hello_world2, hello_world(2, Microseconds(1_500_000), handle));
     uio::executor::run();
+    println!("Exiting!");
 }
