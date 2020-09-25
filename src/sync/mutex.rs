@@ -264,7 +264,7 @@ impl<T> core::future::Future for LockFuture<T> {
             self.waiter.waker = MaybeUninit::new(cx.waker().clone());
             let link = &mut self.link as *mut _;
             let waiter = &mut self.waiter;
-            unsafe { mutex.inner_mut().waiting_wakers.push(waiter, link) };
+            unsafe { mutex.inner_mut().waiting_wakers.push_link(waiter, link) };
             Poll::Pending
         } else {
             mutex.inner_mut().locked = true;

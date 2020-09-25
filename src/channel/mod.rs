@@ -209,7 +209,7 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
         waiter: &mut WaitingSender,
         link: *mut Link<WaitingSender>,
     ) {
-        self.waiting_senders.push(waiter, link);
+        self.waiting_senders.push_link(waiter, link);
     }
 
     unsafe fn add_waiting_receiver(
@@ -217,7 +217,7 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
         waiter: &mut WaitingReceiver,
         link: *mut Link<WaitingReceiver>,
     ) {
-        self.waiting_receivers.push(waiter, link);
+        self.waiting_receivers.push_link(waiter, link);
     }
 
     fn notify_waiting_senders(&mut self) {

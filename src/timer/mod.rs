@@ -3,7 +3,7 @@ use core::future::Future;
 use core::pin::Pin;
 
 use crate::intrusive::rc::*;
-use crate::intrusive::double_list::{List, Link};
+use crate::intrusive::double_list::{List, Node};
 
 use embedded_time::duration::{Microseconds, Extensions};
 use core::hint::unreachable_unchecked;
@@ -158,7 +158,7 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
             if let Some(owner) = x.owner_mut() {
                 owner.time_until_timeout = Microseconds::new(owner.time_until_timeout.0.saturating_sub(elapsed.0));
                 if owner.time_until_timeout > 0u32.microseconds() {
-                    unsafe { self.timer.sleeping_timers.push(owner, x_ptr) };
+                    unsafe { self.timer.sleeping_timers.push_link(owner, x_ptr) };
 
                     next_wait_time = next_wait_time.and_then(|cur_min| {
                         Some(cur_min.min(owner.time_until_timeout))
@@ -190,7 +190,7 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
                     Some(w.min(owner.time_until_timeout))
                 }).or(Some(owner.time_until_timeout));
                 unsafe {
-                    self.timer.sleeping_timers.push(owner, n_ptr);
+                    self.timer.sleeping_timers.push_link(owner, n_ptr);
                 }
             }
             else {
@@ -274,19 +274,17 @@ impl<T: TimerBackend> TimerHandle<T> {
     pub fn delay(&self, duration: Microseconds) -> DelayFuture<T> {
         DelayFuture {
             timer: self.timer.clone(),
-            link: Link::new(),
-            waiter: WaitingTimer {
+            intrusive_node: Node::new(WaitingTimer {
                 waker: None,
                 time_until_timeout: duration,
-            }
+            }),
         }
     }
 }
 
 pub struct DelayFuture<T: TimerBackend> {
     timer: TimerHandleRcRef<T>,
-    waiter: WaitingTimer,
-    link: Link<WaitingTimer>,
+    intrusive_node: Node<WaitingTimer>,
 }
 
 impl<T: TimerBackend> Future for DelayFuture<T>
@@ -294,15 +292,15 @@ impl<T: TimerBackend> Future for DelayFuture<T>
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.waiter.waker.is_some() {
+        if self.intrusive_node.data.waker.is_some() {
             // Already installed and waiting on timeout!
             Poll::Pending
         }
-        else if self.waiter.time_until_timeout > 0u32.microseconds() {
+        else if self.intrusive_node.data.time_until_timeout > 0u32.microseconds() {
             let me = unsafe { self.get_unchecked_mut() };
             let timer = unsafe { &mut **me.timer.rc };
-            unsafe { timer.new_timers.push(&mut me.waiter, &mut me.link) };
-            me.waiter.waker = Some(cx.waker().clone());
+            timer.new_timers.push_node(&mut me.intrusive_node);
+            me.intrusive_node.data.waker = Some(cx.waker().clone());
             if let Some(x) = &timer.waker {
                 x.wake_by_ref();
             }

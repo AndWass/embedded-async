@@ -49,6 +49,24 @@ pub(crate) struct List<T> {
     head: Link<T>,
 }
 
+pub(crate) struct Node<T> {
+    pub(crate) data: T,
+    link: Link<T>,
+}
+
+impl<T> Node<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            data: value,
+            link: Link::new()
+        }
+    }
+
+    pub fn unlink(&mut self) {
+        self.link.unlink();
+    }
+}
+
 impl<T> List<T> {
     pub const fn new() -> Self {
         Self { head: Link::new() }
@@ -59,7 +77,7 @@ impl<T> List<T> {
         self.head.next.is_null()
     }
 
-    pub unsafe fn push(&mut self, link_owner: &mut T, link: *mut Link<T>) {
+    pub unsafe fn push_link(&mut self, link_owner: &mut T, link: *mut Link<T>) {
         let link = &mut *link;
         link.owner = link_owner as *mut T;
         link.next = self.head.next;
@@ -70,6 +88,11 @@ impl<T> List<T> {
             x.prev = link;
             Some(())
         });
+    }
+
+    pub fn push_node(&mut self, node: &mut Node<T>) {
+        let link = &mut node.link as *mut Link<T>;
+        unsafe { self.push_link(&mut node.data, link) };
     }
 
     pub fn pop(&mut self) -> Option<&mut Link<T>> {
@@ -150,7 +173,7 @@ mod tests {
             let mut list = List::<i32>::new();
             let mut link = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link);
+            list.push_link(&mut link_item, &mut link);
             assert_eq!(link.owner, &mut link_item as *mut _);
 
             assert!(!list.is_empty());
@@ -166,7 +189,7 @@ mod tests {
             let mut list = List::<i32>::new();
             let mut link = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link);
+            list.push_link(&mut link_item, &mut link);
             assert!(!list.is_empty());
             let popped = list.pop();
             assert!(popped.is_some());
@@ -181,7 +204,7 @@ mod tests {
             let mut list = List::<i32>::new();
             let mut link = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link);
+            list.push_link(&mut link_item, &mut link);
             assert!(!list.is_empty());
             let mut list2 = List::<i32>::new();
             list.move_to(&mut list2);
@@ -201,10 +224,10 @@ mod tests {
             let mut link3 = Link::<i32>::new();
             let mut link4 = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link1);
-            list.push(&mut link_item, &mut link2);
-            list.push(&mut link_item, &mut link3);
-            list.push(&mut link_item, &mut link4);
+            list.push_link(&mut link_item, &mut link1);
+            list.push_link(&mut link_item, &mut link2);
+            list.push_link(&mut link_item, &mut link3);
+            list.push_link(&mut link_item, &mut link4);
 
             assert_eq!(list.head.next, &mut link4 as *mut _);
             assert_eq!(link4.next, &mut link3 as *mut _);
@@ -231,10 +254,10 @@ mod tests {
             let mut link3 = Link::<i32>::new();
             let mut link4 = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link1);
-            list.push(&mut link_item, &mut link2);
-            list.push(&mut link_item, &mut link3);
-            list.push(&mut link_item, &mut link4);
+            list.push_link(&mut link_item, &mut link1);
+            list.push_link(&mut link_item, &mut link2);
+            list.push_link(&mut link_item, &mut link3);
+            list.push_link(&mut link_item, &mut link4);
 
             assert_eq!(list.head.next, &mut link4 as *mut _);
             assert_eq!(link4.next, &mut link3 as *mut _);
@@ -262,10 +285,10 @@ mod tests {
             let mut link3 = Link::<i32>::new();
             let mut link4 = Link::<i32>::new();
 
-            list.push(&mut link_item, &mut link1);
-            list.push(&mut link_item, &mut link2);
-            list.push(&mut link_item, &mut link3);
-            list.push(&mut link_item, &mut link4);
+            list.push_link(&mut link_item, &mut link1);
+            list.push_link(&mut link_item, &mut link2);
+            list.push_link(&mut link_item, &mut link3);
+            list.push_link(&mut link_item, &mut link4);
 
             assert_eq!(list.head.next, &mut link4 as *mut _);
             assert_eq!(link4.next, &mut link3 as *mut _);
@@ -294,10 +317,10 @@ mod tests {
         let mut link4 = Link::<usize>::new();
 
         unsafe {
-            list.push(&mut link_item[3], &mut link1);
-            list.push(&mut link_item[2], &mut link2);
-            list.push(&mut link_item[1], &mut link3);
-            list.push(&mut link_item[0], &mut link4);
+            list.push_link(&mut link_item[3], &mut link1);
+            list.push_link(&mut link_item[2], &mut link2);
+            list.push_link(&mut link_item[1], &mut link3);
+            list.push_link(&mut link_item[0], &mut link4);
 
             for x in list.iter().enumerate() {
                 assert_eq!(x.0+1, *x.1);
