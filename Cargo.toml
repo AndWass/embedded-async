@@ -14,7 +14,3 @@ embedded-time = "0.10.0"
 smol = "1.0.1"
 pin-utils = "0.1.0"
 uio = { git = "https://github.com/AndWass/uio" }
-
-[profile.test]
-debug = true
-opt-level = 0
