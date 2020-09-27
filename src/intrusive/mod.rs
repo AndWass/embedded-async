@@ -1,3 +1,6 @@
 pub mod rc;
-//pub(crate) mod slist;
+
+#[cfg(feature = "intrusive_list")]
+pub mod double_list;
+
 pub(crate) mod double_list;

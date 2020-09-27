@@ -4,6 +4,7 @@ use core::task::{Context, Poll};
 
 use crate::intrusive::double_list::*;
 use core::hint::unreachable_unchecked;
+use crate::intrusive::rc::{RcAnchor, RcRef};
 
 struct MutexWaiter {
     waker: Option<core::task::Waker>,
@@ -23,7 +24,7 @@ struct Inner<T> {
     // The anchor will be initialized to self when
     // the reference is taken. It will be safe to derefence this
     // pointer as long as the the mutex isn't moved/dropped.
-    rc: crate::intrusive::rc::RcAnchor<*const Mutex<T>>,
+    rc: RcAnchor<*const Mutex<T>>,
     waiting_wakers: List<MutexWaiter>,
 }
 
@@ -52,15 +53,15 @@ impl<T> Mutex<T> {
 
     fn maybe_init_inner(&self) {
         if (*self.inner().rc).is_null() {
-            self.inner_mut().rc = crate::intrusive::rc::RcAnchor::new(self);
+            self.inner_mut().rc = RcAnchor::new(self);
         }
     }
 
     fn release_lock(&self) {
         self.inner_mut().locked = false;
         let mut waiting = List::<MutexWaiter>::new();
-        self.inner_mut().waiting_wakers.move_to(&mut waiting);
-        while let Some(x) = waiting.pop() {
+        self.inner_mut().waiting_wakers.move_to_front_of(&mut waiting);
+        while let Some(x) = waiting.pop_front() {
             x.owner().and_then(|x| {
                 if let Some(x) = &x.waker {
                     x.wake_by_ref();
@@ -141,7 +142,7 @@ impl<T> Mutex<T> {
 /// get access to the stored data.
 #[derive(Clone)]
 pub struct MutexRef<T> {
-    rc_ref: crate::intrusive::rc::RcRef<*const Mutex<T>>,
+    rc_ref: RcRef<*const Mutex<T>>,
 }
 
 impl<T> MutexRef<T> {
@@ -190,7 +191,7 @@ impl<T> MutexRef<T> {
 
 /// A guard that releases the mutex when dropped.
 pub struct MutexGuard<T> {
-    rc_ref: crate::intrusive::rc::RcRef<*const Mutex<T>>,
+    rc_ref: RcRef<*const Mutex<T>>,
 }
 
 impl<T> MutexGuard<T> {
@@ -221,13 +222,13 @@ impl<T> MutexGuard<T> {
     /// let mutex = mutex.take_ref();
     /// let lock = mutex.try_lock().unwrap();
     /// {
-    ///     let mutex_ref2 = lock.mutex_ref();
+    ///     let mutex_ref2 = lock.source();
     ///     assert!(mutex_ref2.try_lock().is_none());
     ///     lock.unlock();
     ///     assert!(mutex_ref2.try_lock().is_some());
     /// }
     /// ```
-    pub fn mutex_ref(&self) -> MutexRef<T> {
+    pub fn source(&self) -> MutexRef<T> {
         MutexRef {
             rc_ref: crate::intrusive::rc::RcRef::clone(&self.rc_ref),
         }
@@ -271,7 +272,7 @@ impl<T> core::future::Future for LockFuture<T> {
             self.waiter.waker = Some(cx.waker().clone());
             let link = &mut self.link as *mut _;
             let waiter = &mut self.waiter;
-            unsafe { mutex.inner_mut().waiting_wakers.push_link(waiter, link) };
+            unsafe { mutex.inner_mut().waiting_wakers.push_link_back(waiter, link) };
             Poll::Pending
         } else {
             mutex.inner_mut().locked = true;

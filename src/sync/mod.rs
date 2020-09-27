@@ -5,7 +5,7 @@
 //! used to synchronize across threads or between an interrupt and the main application.
 
 mod mutex;
-mod rwlock;
+mod condvar;
 
 pub use mutex::*;
-pub use rwlock::*;
+pub use condvar::*;

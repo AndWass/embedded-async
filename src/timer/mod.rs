@@ -149,16 +149,16 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
         // otherwise they are re-added to the list of sleeping timers.
 
         let mut sleepers = List::<WaitingTimer>::new();
-        self.timer.sleeping_timers.move_to(&mut sleepers);
+        self.timer.sleeping_timers.move_to_front_of(&mut sleepers);
         let mut next_wait_time: Option<Microseconds> = None;
 
-        while let Some(x) = sleepers.pop() {
+        while let Some(x) = sleepers.pop_front() {
             let x_ptr = x as *mut _;
 
             if let Some(owner) = x.owner_mut() {
                 owner.time_until_timeout = Microseconds::new(owner.time_until_timeout.0.saturating_sub(elapsed.0));
                 if owner.time_until_timeout > 0u32.microseconds() {
-                    unsafe { self.timer.sleeping_timers.push_link(owner, x_ptr) };
+                    unsafe { self.timer.sleeping_timers.push_link_back(owner, x_ptr) };
 
                     next_wait_time = next_wait_time.and_then(|cur_min| {
                         Some(cur_min.min(owner.time_until_timeout))
@@ -177,11 +177,11 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
     fn append_new_timers(&mut self) -> Option<Microseconds> {
         // Takes all timers in the new_timers list and adds them to the list of sleeping timers
         let mut to_append = List::<WaitingTimer>::new();
-        self.timer.new_timers.move_to(&mut to_append);
+        self.timer.new_timers.move_to_front_of(&mut to_append);
 
         let mut retval: Option<Microseconds> = None;
 
-        while let Some(n) = to_append.pop() {
+        while let Some(n) = to_append.pop_front() {
             let n_ptr = n as *mut _;
 
             let owner = n.owner_mut().expect("");
@@ -190,7 +190,7 @@ impl<T: TimerBackend> TimerTaskRunner<'_, T> {
                     Some(w.min(owner.time_until_timeout))
                 }).or(Some(owner.time_until_timeout));
                 unsafe {
-                    self.timer.sleeping_timers.push_link(owner, n_ptr);
+                    self.timer.sleeping_timers.push_link_back(owner, n_ptr);
                 }
             }
             else {
@@ -299,7 +299,7 @@ impl<T: TimerBackend> Future for DelayFuture<T>
         else if self.intrusive_node.data.time_until_timeout > 0u32.microseconds() {
             let me = unsafe { self.get_unchecked_mut() };
             let timer = unsafe { &mut **me.timer.rc };
-            timer.new_timers.push_node(&mut me.intrusive_node);
+            timer.new_timers.push_node_back(&mut me.intrusive_node);
             me.intrusive_node.data.waker = Some(cx.waker().clone());
             if let Some(x) = &timer.waker {
                 x.wake_by_ref();

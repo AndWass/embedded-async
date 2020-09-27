@@ -209,7 +209,7 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
         waiter: &mut WaitingSender,
         link: *mut Link<WaitingSender>,
     ) {
-        self.waiting_senders.push_link(waiter, link);
+        self.waiting_senders.push_link_back(waiter, link);
     }
 
     unsafe fn add_waiting_receiver(
@@ -217,13 +217,13 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
         waiter: &mut WaitingReceiver,
         link: *mut Link<WaitingReceiver>,
     ) {
-        self.waiting_receivers.push_link(waiter, link);
+        self.waiting_receivers.push_link_back(waiter, link);
     }
 
     fn notify_waiting_senders(&mut self) {
         let mut waiting_senders = List::<WaitingSender>::new();
-        self.waiting_senders.move_to(&mut waiting_senders);
-        while let Some(s) = waiting_senders.pop() {
+        self.waiting_senders.move_to_front_of(&mut waiting_senders);
+        while let Some(s) = waiting_senders.pop_front() {
             if let Some(w) = s.owner() {
                 w.waker.wake_by_ref();
             } else {
@@ -234,8 +234,8 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
 
     fn notify_waiting_receivers(&mut self) {
         let mut waiting_receivers = List::<WaitingReceiver>::new();
-        self.waiting_receivers.move_to(&mut waiting_receivers);
-        while let Some(r) = waiting_receivers.pop() {
+        self.waiting_receivers.move_to_front_of(&mut waiting_receivers);
+        while let Some(r) = waiting_receivers.pop_front() {
             if let Some(w) = r.owner() {
                 w.waker.wake_by_ref();
             } else {
