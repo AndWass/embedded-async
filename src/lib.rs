@@ -1,6 +1,10 @@
+#![no_std]
+
 pub(crate) mod intrusive;
 
+pub mod channel;
 pub mod sync;
+pub mod timer;
 
 #[cfg(test)]
 mod tests {

@@ -5,9 +5,14 @@ authors = ["Andreas Wass <wass.andreas@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+intrusive_list = []
 
 [dependencies]
+heapless = "0.5.5"
+embedded-time = "0.10.0"
 
 [dev-dependencies]
 smol = "1.0.1"
 pin-utils = "0.1.0"
+uio = { git = "https://github.com/AndWass/uio" }

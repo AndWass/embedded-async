@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 pub(crate) struct Link<T> {
     owner: *mut T,
     next: *mut Link<T>,
