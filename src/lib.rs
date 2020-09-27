@@ -1,6 +1,6 @@
 #![no_std]
 
-pub(crate) mod intrusive;
+pub mod intrusive;
 
 pub mod channel;
 pub mod sync;
