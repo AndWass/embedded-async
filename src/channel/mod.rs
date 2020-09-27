@@ -248,6 +248,7 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
     }
 }
 
+#[derive(Clone)]
 pub struct Sender<T: 'static> {
     channel: SenderRef<T>,
 }
@@ -308,6 +309,7 @@ impl<T: 'static> Future for SendFuture<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct Receiver<T: 'static> {
     channel: ReceiverRef<T>,
 }
