@@ -4,8 +4,9 @@
 //! be used when synchronizing between tasks running on the same thread. They must not be
 //! used to synchronize across threads or between an interrupt and the main application.
 
-mod mutex;
 mod condvar;
+mod mutex;
 
-pub use mutex::*;
 pub use condvar::*;
+pub use condvar::*;
+pub use mutex::*;

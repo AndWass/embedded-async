@@ -2,9 +2,9 @@ use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::intrusive::double_list::*;
-use core::hint::unreachable_unchecked;
+use crate::intrusive::internal::*;
 use crate::intrusive::rc::{RcAnchor, RcRef};
+use core::hint::unreachable_unchecked;
 
 struct MutexWaiter {
     waker: Option<core::task::Waker>,
@@ -12,9 +12,7 @@ struct MutexWaiter {
 
 impl Default for MutexWaiter {
     fn default() -> Self {
-        Self {
-            waker: None,
-        }
+        Self { waker: None }
     }
 }
 
@@ -60,13 +58,14 @@ impl<T> Mutex<T> {
     fn release_lock(&self) {
         self.inner_mut().locked = false;
         let mut waiting = List::<MutexWaiter>::new();
-        self.inner_mut().waiting_wakers.move_to_front_of(&mut waiting);
+        self.inner_mut()
+            .waiting_wakers
+            .move_to_front_of(&mut waiting);
         while let Some(x) = waiting.pop_front() {
             x.owner().and_then(|x| {
                 if let Some(x) = &x.waker {
                     x.wake_by_ref();
-                }
-                else {
+                } else {
                     unsafe {
                         unreachable_unchecked();
                     }
@@ -272,7 +271,12 @@ impl<T> core::future::Future for LockFuture<T> {
             self.waiter.waker = Some(cx.waker().clone());
             let link = &mut self.link as *mut _;
             let waiter = &mut self.waiter;
-            unsafe { mutex.inner_mut().waiting_wakers.push_link_back(waiter, link) };
+            unsafe {
+                mutex
+                    .inner_mut()
+                    .waiting_wakers
+                    .push_link_back(waiter, link)
+            };
             Poll::Pending
         } else {
             mutex.inner_mut().locked = true;

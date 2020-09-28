@@ -2,7 +2,7 @@
 
 pub use heapless::consts;
 
-use crate::intrusive::double_list::*;
+use crate::intrusive::internal::*;
 use crate::intrusive::rc;
 
 use core::future::Future;
@@ -94,7 +94,7 @@ struct ReceiverRef<T: 'static>(rc::RcRef<*mut dyn ChannelOps<T>>);
 
 impl<T: 'static> ReceiverRef<T> {
     fn channel(&self) -> &dyn ChannelOps<T> {
-        unsafe { & **self.0 }
+        unsafe { &**self.0 }
     }
     unsafe fn channel_mut(&self) -> &mut dyn ChannelOps<T> {
         &mut **self.0
@@ -234,7 +234,8 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
 
     fn notify_waiting_receivers(&mut self) {
         let mut waiting_receivers = List::<WaitingReceiver>::new();
-        self.waiting_receivers.move_to_front_of(&mut waiting_receivers);
+        self.waiting_receivers
+            .move_to_front_of(&mut waiting_receivers);
         while let Some(r) = waiting_receivers.pop_front() {
             if let Some(w) = r.owner() {
                 w.waker.wake_by_ref();

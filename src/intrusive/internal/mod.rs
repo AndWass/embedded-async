@@ -1,5 +1,5 @@
-use core::marker::PhantomData;
 use core::cell::UnsafeCell;
+use core::marker::PhantomData;
 
 pub struct Link<T> {
     owner: *mut T,
@@ -55,7 +55,7 @@ impl<T> Node<T> {
     pub fn new(value: T) -> Self {
         Self {
             data: value,
-            link: Link::new()
+            link: Link::new(),
         }
     }
 
@@ -64,21 +64,18 @@ impl<T> Node<T> {
     }
 }
 
-struct ListInner<T>
-{
+struct ListInner<T> {
     head: Link<T>,
     tail: Link<T>,
 }
 
 pub struct List<T> {
-    inner: UnsafeCell<ListInner<T>>
+    inner: UnsafeCell<ListInner<T>>,
 }
 
 impl<T> List<T> {
     fn inner_mut(&self) -> &mut ListInner<T> {
-        unsafe {
-            &mut *self.inner.get()
-        }
+        unsafe { &mut *self.inner.get() }
     }
     fn maybe_init_head_tail(&self) {
         unsafe {
@@ -90,13 +87,14 @@ impl<T> List<T> {
         }
     }
     pub const fn new() -> Self {
-        Self { inner: UnsafeCell::new(ListInner {
-            head: Link::new(),
-            tail: Link::new(),
-        }) }
+        Self {
+            inner: UnsafeCell::new(ListInner {
+                head: Link::new(),
+                tail: Link::new(),
+            }),
+        }
     }
 
-    #[allow(unused)]
     pub fn is_empty(&self) -> bool {
         self.maybe_init_head_tail();
         let inner = self.inner_mut();
@@ -126,8 +124,10 @@ impl<T> List<T> {
 
     pub unsafe fn push_link_back(&mut self, link_owner: &mut T, link: *mut Link<T>) {
         self.maybe_init_head_tail();
+
         let link = &mut *link;
         let inner = self.inner_mut();
+
         link.owner = link_owner as *mut T;
 
         // We want to insert X at the back of list head--A--B--C--D--tail
@@ -158,8 +158,7 @@ impl<T> List<T> {
         unsafe {
             if self.is_empty() {
                 None
-            }
-            else {
+            } else {
                 // We want to remove A from head--A--B--C--tail
                 let inner = self.inner_mut();
                 let front = &mut *inner.head.next;
@@ -198,11 +197,7 @@ impl<T> List<T> {
     pub unsafe fn iter(&self) -> ListIterator<T> {
         self.maybe_init_head_tail();
         ListIterator {
-            current: Link{
-                owner: core::ptr::null_mut(),
-                next: self.inner_mut().head.next,
-                prev: core::ptr::null_mut(),
-            },
+            next: self.inner_mut().head.next,
             tail: &mut self.inner_mut().tail,
             phantom: PhantomData,
         }
@@ -210,7 +205,7 @@ impl<T> List<T> {
 }
 
 pub struct ListIterator<'a, T: 'static> {
-    current: Link<T>,
+    next: *mut Link<T>,
     tail: *mut Link<T>,
     phantom: core::marker::PhantomData<&'a ()>,
 }
@@ -219,14 +214,13 @@ impl<'a, T: 'static> Iterator for ListIterator<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.next != self.tail {
+        if self.next != self.tail {
             unsafe {
-                let next = &*self.current.next;
-                self.current.next = next.next;
+                let next = &*self.next;
+                self.next = next.next;
                 Some(&*next.owner)
             }
-        }
-        else {
+        } else {
             None
         }
     }
@@ -346,7 +340,10 @@ mod tests {
             assert_eq!(link3.next, &mut link4 as *mut _);
             assert_eq!(link4.next, &mut list.inner_mut().tail as *mut _);
 
-            assert_eq!(list.pop_front().unwrap() as *mut Link<i32>, &mut link1 as *mut _);
+            assert_eq!(
+                list.pop_front().unwrap() as *mut Link<i32>,
+                &mut link1 as *mut _
+            );
             assert_eq!(list.inner_mut().head.next, &mut link2 as *mut _);
             assert_eq!(link2.next, &mut link3 as *mut _);
             assert_eq!(link3.next, &mut link4 as *mut _);
@@ -502,7 +499,7 @@ mod tests {
 
     #[test]
     fn iter_test_push_front() {
-        let mut link_item = [1usize, 2, 3, 4,];
+        let mut link_item = [1usize, 2, 3, 4];
         let mut list = List::<usize>::new();
         let mut link1 = Link::<usize>::new();
         let mut link2 = Link::<usize>::new();
@@ -516,14 +513,14 @@ mod tests {
             list.push_link_front(&mut link_item[0], &mut link4);
 
             for x in list.iter().enumerate() {
-                assert_eq!(x.0+1, *x.1);
+                assert_eq!(x.0 + 1, *x.1);
             }
         }
     }
 
     #[test]
     fn iter_test_push_back() {
-        let mut link_item = [1usize, 2, 3, 4,];
+        let mut link_item = [1usize, 2, 3, 4];
         let mut list = List::<usize>::new();
         let mut link1 = Link::<usize>::new();
         let mut link2 = Link::<usize>::new();
@@ -537,8 +534,31 @@ mod tests {
             list.push_link_back(&mut link_item[3], &mut link4);
 
             for x in list.iter().enumerate() {
-                assert_eq!(x.0+1, *x.1);
+                assert_eq!(x.0 + 1, *x.1);
             }
         }
+    }
+
+    #[test]
+    fn empty_iter() {
+        let mut list = List::<usize>::new();
+        list.maybe_init_head_tail();
+        assert_eq!(
+            list.inner_mut().head.next,
+            &mut list.inner_mut().tail as *mut _
+        );
+        assert_eq!(
+            list.inner_mut().tail.prev,
+            &mut list.inner_mut().head as *mut _
+        );
+        unsafe { for x in list.iter() {} }
+        assert_eq!(
+            list.inner_mut().head.next,
+            &mut list.inner_mut().tail as *mut _
+        );
+        assert_eq!(
+            list.inner_mut().tail.prev,
+            &mut list.inner_mut().head as *mut _
+        );
     }
 }
