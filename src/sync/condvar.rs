@@ -1,14 +1,13 @@
 //! A condition variable
-//!
-//! This can be used to notify one or multiple waiters
 
 use crate::intrusive::internal::*;
 use crate::intrusive::rc::*;
-use crate::sync::{MutexGuard, MutexRef};
+use crate::sync::{MutexGuard};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+#[derive(Debug)]
 pub struct WaitError;
 
 struct NotifyRcRef {
@@ -66,14 +65,46 @@ impl Condvar {
             waiter.owner_mut().and_then(|o| Some(o.notify()));
         }
     }
+
+    pub fn new() -> Self {
+        Self {
+            rc_waiter: RcAnchor::new(core::ptr::null_mut()),
+            rc_notifier: RcAnchor::new(core::ptr::null_mut()),
+            waiters: List::new(),
+        }
+    }
+
+    pub fn split(self: Pin<&mut Self>) -> Option<(CondvarNotifier, CondvarWaiter)> {
+        if !self.rc_waiter.is_null() {
+            None
+        }
+        else {
+            unsafe {
+                let me = self.get_unchecked_mut();
+                me.rc_waiter = RcAnchor::new(me);
+                me.rc_notifier = RcAnchor::new(me);
+                let rc_notifier = me.rc_notifier.get_ref();
+                let rc_waiter = me.rc_waiter.get_ref();
+                Some((
+                    CondvarNotifier {
+                        condvar: rc_notifier
+                    },
+                    CondvarWaiter {
+                        condvar: rc_waiter
+                    }
+                ))
+            }
+        }
+    }
 }
 
+#[derive(Clone)]
 pub struct CondvarWaiter {
     condvar: RcRef<*mut Condvar>,
 }
 
 impl CondvarWaiter {
-    pub async fn wait<T>(&self, mut mutex: MutexGuard<T>) -> Result<MutexGuard<T>, WaitError> {
+    pub async fn wait<T>(&self, mutex: MutexGuard<T>) -> Result<MutexGuard<T>, WaitError> {
         let mref = mutex.source();
         mutex.unlock();
         let wait_result = WaitFuture {
@@ -93,11 +124,14 @@ impl CondvarWaiter {
         mut mutex: MutexGuard<T>,
         mut condition: F,
     ) -> Result<MutexGuard<T>, WaitError> {
-        while !condition(&mut *mutex) {
+        loop {
             mutex = match self.wait(mutex).await {
                 Ok(m) => m,
                 Err(e) => return Err(e),
             };
+            if condition(&mut *mutex) {
+                break;
+            }
         }
 
         Ok(mutex)
@@ -128,6 +162,7 @@ impl Future for WaitFuture {
     }
 }
 
+#[derive(Clone)]
 pub struct CondvarNotifier {
     condvar: RcRef<*mut Condvar>,
 }

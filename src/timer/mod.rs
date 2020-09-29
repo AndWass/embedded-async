@@ -147,7 +147,7 @@ impl<T: TimerBackend> Timer<T> {
         self.backend.take()
     }
 
-    pub unsafe fn consume_task(mut task: TimerTask<T>) -> Option<T> {
+    pub unsafe fn consume_task(task: TimerTask<T>) -> Option<T> {
         let timer = &mut **task.timer;
         timer.backend.take()
     }

@@ -58,7 +58,7 @@ impl<T> Node<T> {
             link: Link::new(),
         }
     }
-
+    #[allow(dead_code)]
     pub fn unlink(&mut self) {
         self.link.unlink();
     }
@@ -78,12 +78,10 @@ impl<T> List<T> {
         unsafe { &mut *self.inner.get() }
     }
     fn maybe_init_head_tail(&self) {
-        unsafe {
-            let inner = self.inner_mut();
-            if inner.head.next.is_null() {
-                inner.head.next = &mut inner.tail as *mut _;
-                inner.tail.prev = &mut inner.head as *mut _;
-            }
+        let inner = self.inner_mut();
+        if inner.head.next.is_null() {
+            inner.head.next = &mut inner.tail as *mut _;
+            inner.tail.prev = &mut inner.head as *mut _;
         }
     }
     pub const fn new() -> Self {
@@ -143,6 +141,7 @@ impl<T> List<T> {
         // List is now head--A--B--C--D--X--tail
     }
 
+    #[allow(dead_code)]
     pub fn push_node_front(&mut self, node: &mut Node<T>) {
         let link = &mut node.link as *mut Link<T>;
         unsafe { self.push_link_front(&mut node.data, link) };
@@ -541,7 +540,7 @@ mod tests {
 
     #[test]
     fn empty_iter() {
-        let mut list = List::<usize>::new();
+        let list = List::<usize>::new();
         list.maybe_init_head_tail();
         assert_eq!(
             list.inner_mut().head.next,
@@ -551,7 +550,7 @@ mod tests {
             list.inner_mut().tail.prev,
             &mut list.inner_mut().head as *mut _
         );
-        unsafe { for x in list.iter() {} }
+        unsafe { for _ in list.iter() {} }
         assert_eq!(
             list.inner_mut().head.next,
             &mut list.inner_mut().tail as *mut _

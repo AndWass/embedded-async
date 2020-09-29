@@ -156,7 +156,7 @@ impl<T> MutexRef<T> {
     /// # Examples
     ///
     /// ```
-    /// # smol::block_on(async {
+    /// # uio::task_start!(run_task, async {
     /// use embedded_async::sync::Mutex;
     ///
     /// let mutex = Mutex::new(10);
@@ -164,7 +164,8 @@ impl<T> MutexRef<T> {
     /// let mutex = mutex.take_ref();
     /// let guard = mutex.lock().await;
     /// assert_eq!(*guard, 10);
-    /// # })
+    /// # });
+    /// # uio::executor::run();
     pub fn lock(&self) -> LockFuture<T> {
         unsafe { self.mutex().lock_impl() }
     }
@@ -290,8 +291,6 @@ impl<T> core::future::Future for LockFuture<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::Ordering;
-    use pin_utils::core_reexport::sync::atomic::AtomicBool;
 
     #[test]
     fn new_mutex_unlocked() {
@@ -316,38 +315,37 @@ mod tests {
 
     #[test]
     fn lock_blocks() {
-        smol::block_on(async {
-            let mutex = Mutex::new(10);
-            pin_utils::pin_mut!(mutex);
-            let mptr = unsafe { mutex.as_mut().get_unchecked_mut() as *mut Mutex<i32> };
-            let mref = mutex.take_ref();
+        let mutex = Mutex::new(10);
+        pin_utils::pin_mut!(mutex);
+        let mptr = unsafe { mutex.as_mut().get_unchecked_mut() as *mut Mutex<i32> };
+        let mref = mutex.take_ref();
+        let mptr = unsafe { &mut *mptr };
 
-            let mptr = unsafe { &mut *mptr };
+        let mut lock_poller = crate::test::ManualPoll::new(mref.lock());
+        let lock = lock_poller.poll();
+        // Get a lock
+        assert!(lock.is_some());
+        let lock = lock.unwrap();
+        assert_eq!(*lock, 10);
 
-            let lock = mref.lock().await;
-            let mref2 = mref.clone();
-            static STARTED: AtomicBool = AtomicBool::new(false);
-            let flag = &STARTED;
+        // Make sure no mutex are waiting for lock!
+        assert!(mptr.inner().waiting_wakers.is_empty());
+        let mut lock_poller = crate::test::ManualPoll::new(mref.lock());
+        let lock2 = lock_poller.poll();
+        let mref2 = mref.clone();
+        assert!(lock2.is_none());
+        assert!(!mptr.inner().waiting_wakers.is_empty());
 
-            let executor = smol::LocalExecutor::new();
-
-            let _task = executor.spawn(async move {
-                flag.store(true, Ordering::Release);
-                let mut lock = mref.lock().await;
-                *lock = 40;
-            });
-
-            assert!(mptr.inner().waiting_wakers.is_empty());
-            assert!(executor.try_tick());
-            assert!(STARTED.load(Ordering::Acquire));
-            assert!(!mptr.inner().waiting_wakers.is_empty());
-            assert_eq!(*lock, 10);
-            lock.unlock();
-            assert!(mptr.inner().waiting_wakers.is_empty());
-            executor.tick().await;
-            let lock = mref2.try_lock();
-            assert!(lock.is_some());
-            assert_eq!(*lock.unwrap(), 40);
-        });
+        lock.unlock();
+        assert!(mptr.inner().waiting_wakers.is_empty());
+        {
+            let lock2 = lock_poller.poll();
+            assert!(lock2.is_some());
+            let mut lock2 = lock2.unwrap();
+            *lock2 = 40;
+        }
+        let lock = mref2.try_lock();
+        assert!(lock.is_some());
+        assert_eq!(*lock.unwrap(), 40);
     }
 }
