@@ -249,9 +249,16 @@ impl<T, L: heapless::ArrayLength<T>> ChannelOps<T> for Channel<T, L> {
     }
 }
 
-#[derive(Clone)]
 pub struct Sender<T: 'static> {
     channel: SenderRef<T>,
+}
+
+impl<T: 'static> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            channel: self.channel.clone(),
+        }
+    }
 }
 
 impl<T: 'static> Sender<T> {
@@ -273,6 +280,7 @@ impl<T: 'static> Sender<T> {
     }
 }
 
+#[must_use]
 pub struct SendFuture<T: 'static> {
     value: Option<T>,
     waiter: Option<WaitingSender>,
@@ -310,9 +318,16 @@ impl<T: 'static> Future for SendFuture<T> {
     }
 }
 
-#[derive(Clone)]
 pub struct Receiver<T: 'static> {
     channel: ReceiverRef<T>,
+}
+
+impl<T: 'static> Clone for Receiver<T> {
+    fn clone(&self) -> Self {
+        Self {
+            channel: self.channel.clone(),
+        }
+    }
 }
 
 impl<T: 'static> Receiver<T> {
@@ -340,6 +355,7 @@ impl<T: 'static> Receiver<T> {
     }
 }
 
+#[must_use]
 pub struct ReceiveFuture<T: 'static> {
     waiter: Option<WaitingReceiver>,
     link: Link<WaitingReceiver>,
