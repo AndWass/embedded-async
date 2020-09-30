@@ -14,7 +14,7 @@ async fn runner(id: i32, yield_time: Duration) {
         let start_time = std::time::Instant::now();
         yield_for(yield_time).await;
         let end_time = std::time::Instant::now();
-        println!("{} yielded for {:?}", id, end_time-start_time);
+        println!("{} yielded for {:?}", id, end_time - start_time);
     }
 }
 

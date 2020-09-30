@@ -1,6 +1,6 @@
-use std::time::{Instant, Duration};
+use embedded_async::channel::{Channel, Receiver, Sender};
 use embedded_async::task;
-use embedded_async::channel::{Channel, Sender, Receiver};
+use std::time::{Duration, Instant};
 
 async fn yield_for(dur: Duration) {
     let start_time = Instant::now();
@@ -21,7 +21,7 @@ async fn receiver(id: i32, rx: Receiver<i32>) {
 async fn sender(tx: Sender<i32>) {
     let mut value = 0;
     loop {
-        println!("Sending {} and {}", value, value+1);
+        println!("Sending {} and {}", value, value + 1);
         tx.send(value).await.unwrap();
         tx.send(value + 1).await.unwrap();
         yield_for(Duration::from_secs(1)).await;

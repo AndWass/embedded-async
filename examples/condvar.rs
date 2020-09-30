@@ -1,4 +1,4 @@
-use embedded_async::sync::{MutexRef, CondvarNotifier, CondvarWaiter, Mutex, Condvar};
+use embedded_async::sync::{Condvar, CondvarNotifier, CondvarWaiter, Mutex, MutexRef};
 use std::time::{Duration, Instant};
 
 async fn yield_for(dur: Duration) {
@@ -17,8 +17,10 @@ async fn waiter(id: i32, mutex: MutexRef<i32>, cv: CondvarWaiter) {
 
 async fn wait_for_modulo(mutex: MutexRef<i32>, cv: CondvarWaiter) {
     loop {
-        let lock = cv.wait_until(mutex.lock().await,
-                                 |x| *x % 5 == 0).await.unwrap();
+        let lock = cv
+            .wait_until(mutex.lock().await, |x| *x % 5 == 0)
+            .await
+            .unwrap();
         println!("Wait for modulo notified with value {}", *lock);
     }
 }
@@ -31,8 +33,7 @@ async fn notifier(mutex: MutexRef<i32>, cv: CondvarNotifier) {
         if value % 2 == 0 {
             println!("Notifying ALL with value {}", value);
             cv.notify_all();
-        }
-        else {
+        } else {
             println!("Notifying ONE with value {}", value);
             cv.notify_one();
         }

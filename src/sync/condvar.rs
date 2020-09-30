@@ -2,7 +2,7 @@
 
 use crate::intrusive::internal::*;
 use crate::intrusive::rc::*;
-use crate::sync::{MutexGuard};
+use crate::sync::MutexGuard;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -77,8 +77,7 @@ impl Condvar {
     pub fn split(self: Pin<&mut Self>) -> Option<(CondvarNotifier, CondvarWaiter)> {
         if !self.rc_waiter.is_null() {
             None
-        }
-        else {
+        } else {
             unsafe {
                 let me = self.get_unchecked_mut();
                 me.rc_waiter = RcAnchor::new(me);
@@ -87,11 +86,9 @@ impl Condvar {
                 let rc_waiter = me.rc_waiter.get_ref();
                 Some((
                     CondvarNotifier {
-                        condvar: rc_notifier
+                        condvar: rc_notifier,
                     },
-                    CondvarWaiter {
-                        condvar: rc_waiter
-                    }
+                    CondvarWaiter { condvar: rc_waiter },
                 ))
             }
         }

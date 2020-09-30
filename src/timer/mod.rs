@@ -16,7 +16,7 @@ pub trait Duration: Default + Clone + core::fmt::Debug {
 
 macro_rules! etime_impl {
     ($x:ident, $t: ident) => {
-        impl Duration for embedded_time::duration::$x<$t> {
+        impl crate::timer::Duration for embedded_time::duration::$x<$t> {
             fn zero() -> Self {
                 Self::new(0)
             }
@@ -36,18 +36,51 @@ macro_rules! etime_impl {
     };
 }
 
-etime_impl!(Nanoseconds, u32);
-etime_impl!(Nanoseconds, u64);
-etime_impl!(Microseconds, u32);
-etime_impl!(Microseconds, u64);
-etime_impl!(Milliseconds, u32);
-etime_impl!(Milliseconds, u64);
-etime_impl!(Seconds, u32);
-etime_impl!(Seconds, u64);
-etime_impl!(Minutes, u32);
-etime_impl!(Minutes, u64);
-etime_impl!(Hours, u32);
-etime_impl!(Hours, u64);
+#[cfg(feature="embedded_time_u32")]
+mod etime_impl32
+{
+    etime_impl!(Nanoseconds, u32);
+    etime_impl!(Microseconds, u32);
+    etime_impl!(Milliseconds, u32);
+    etime_impl!(Seconds, u32);
+    etime_impl!(Minutes, u32);
+    etime_impl!(Hours, u32);
+}
+#[cfg(feature="embedded_time_u64")]
+mod etime_impl64
+{
+    etime_impl!(Nanoseconds, u64);
+    etime_impl!(Microseconds, u64);
+    etime_impl!(Milliseconds, u64);
+    etime_impl!(Seconds, u64);
+    etime_impl!(Minutes, u64);
+    etime_impl!(Hours, u64);
+}
+
+#[cfg(feature="embedded_time_u32")]
+pub use etime_impl32::*;
+
+#[cfg(feature="embedded_time_u64")]
+pub use etime_impl64::*;
+
+#[cfg(feature="core_timer_duration")]
+impl Duration for core::time::Duration {
+    fn zero() -> Self {
+        Self::from_secs(0)
+    }
+
+    fn is_zero(&self) -> bool {
+        *self == Self::from_secs(0)
+    }
+
+    fn saturating_sub(&self, rhs: &Self) -> Self {
+        self.clone().checked_sub(rhs.clone()).or(Some(Self::from_secs(0))).unwrap()
+    }
+
+    fn min(&self, rhs: &Self) -> Self {
+        self.clone().min(rhs.clone())
+    }
+}
 
 pub trait TimerBackend {
     type Duration: super::timer::Duration + 'static;
@@ -312,6 +345,7 @@ impl<T: TimerBackend> TimerHandle<T> {
     }
 }
 
+#[must_use]
 pub struct DelayFuture<T: TimerBackend> {
     timer: TimerHandleRcRef<T>,
     intrusive_node: Node<WaitingTimer<T::Duration>>,

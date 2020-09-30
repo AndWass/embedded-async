@@ -1,6 +1,6 @@
 use core::future::Future;
-use core::task::{Context, Poll};
 use core::pin::Pin;
+use core::task::{Context, Poll};
 
 struct YieldNow(bool);
 
@@ -10,8 +10,7 @@ impl Future for YieldNow {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.0 == true {
             Poll::Ready(())
-        }
-        else {
+        } else {
             self.0 = true;
             cx.waker().wake_by_ref();
             Poll::Pending
